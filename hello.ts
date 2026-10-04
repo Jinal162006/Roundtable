@@ -19,6 +19,7 @@ async function ensureSchema() {
   )`;
   await sql`CREATE TABLE IF NOT EXISTS roundtable_rooms (
     id TEXT PRIMARY KEY,
+    user_id TEXT,
     name TEXT NOT NULL,
     type TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
@@ -49,11 +50,16 @@ async function ensureSchema() {
   )`;
   await sql`CREATE TABLE IF NOT EXISTS roundtable_feedback (
     id BIGSERIAL PRIMARY KEY,
+    user_id TEXT,
     name TEXT NOT NULL DEFAULT '',
     email TEXT NOT NULL DEFAULT '',
     message TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`;
+  await sql`ALTER TABLE roundtable_rooms ADD COLUMN IF NOT EXISTS user_id TEXT`;
+  await sql`ALTER TABLE roundtable_feedback ADD COLUMN IF NOT EXISTS user_id TEXT`;
+  await sql`CREATE INDEX IF NOT EXISTS roundtable_rooms_user_id_idx ON roundtable_rooms (user_id)`;
+  await sql`CREATE INDEX IF NOT EXISTS roundtable_feedback_user_id_idx ON roundtable_feedback (user_id)`;
   await sql`INSERT INTO roundtable_rooms (id, name, type, description, participant_count, status)
     VALUES
       ('room-product-sync', 'Product sync · Q3', 'Meeting', 'A focused conversation about the next quarter.', 4, 'active'),
@@ -91,6 +97,11 @@ function decodeBase64Url(value: string): Uint8Array {
   return Uint8Array.from(binary, character => character.charCodeAt(0));
 }
 
+async function userOwnsRoom(roomId: string, userId: string) {
+  const rows = await sql`SELECT 1 FROM roundtable_rooms WHERE id = ${roomId} AND user_id = ${userId} LIMIT 1`;
+  return rows.length > 0;
+}
+
 async function authenticate(request: Request): Promise<AuthenticatedUser | null> {
   const authorization = request.headers.get("Authorization");
   const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
@@ -101,14 +112,14 @@ async function authenticate(request: Request): Promise<AuthenticatedUser | null>
     if (!encodedHeader || !encodedPayload || !encodedSignature) return null;
     const header = JSON.parse(new TextDecoder().decode(decodeBase64Url(encodedHeader))) as { alg?: string; kid?: string };
     const payload = JSON.parse(new TextDecoder().decode(decodeBase64Url(encodedPayload))) as { sub?: string; exp?: number; name?: string; email?: string };
-    if (header.alg !== "RS256" || !header.kid || !payload.sub || !payload.exp || payload.exp <= Math.floor(Date.now() / 1000)) return null;
+    if (header.alg !== "EdDSA" || !header.kid || !payload.sub || !payload.exp || payload.exp <= Math.floor(Date.now() / 1000)) return null;
     const jwksResponse = await fetch(jwksUrl);
     if (!jwksResponse.ok) return null;
     const jwks = await jwksResponse.json() as { keys?: JsonWebKey[] };
     const key = jwks.keys?.find(candidate => (candidate as JsonWebKey & { kid?: string }).kid === header.kid);
     if (!key) return null;
-    const cryptoKey = await crypto.subtle.importKey("jwk", key, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
-    const valid = await crypto.subtle.verify({ name: "RSASSA-PKCS1-v1_5" }, cryptoKey, decodeBase64Url(encodedSignature), new TextEncoder().encode(`${encodedHeader}.${encodedPayload}`));
+    const cryptoKey = await crypto.subtle.importKey("jwk", key, { name: "Ed25519" }, false, ["verify"]);
+    const valid = await crypto.subtle.verify({ name: "Ed25519" }, cryptoKey, decodeBase64Url(encodedSignature), new TextEncoder().encode(`${encodedHeader}.${encodedPayload}`));
     return valid ? { id: payload.sub, name: payload.name?.trim() || "", email: payload.email?.trim() || "" } : null;
   } catch {
     return null;
@@ -144,7 +155,8 @@ export default async function hello(request: Request): Promise<Response> {
     if (path === "/rooms/delete" && request.method === "POST") {
       const { roomId } = await request.json() as { roomId?: string };
       if (!roomId) return json({ error: "Room ID is required." }, 400);
-      await sql`DELETE FROM roundtable_rooms WHERE id = ${roomId}`;
+      const deleted = await sql`DELETE FROM roundtable_rooms WHERE id = ${roomId} AND user_id = ${user.id} RETURNING id`;
+      if (!deleted.length) return json({ error: "Room not found." }, 404);
       return json({ ok: true });
     }
     if (path === "/feedback" && request.method === "POST") {
@@ -154,36 +166,38 @@ export default async function hello(request: Request): Promise<Response> {
       const name = feedback.name?.trim() || "Anonymous";
       const email = feedback.email.trim();
       const message = feedback.message.trim();
-      await sql`INSERT INTO roundtable_feedback (name, email, message)
-        VALUES (${name}, ${email}, ${message})`;
+      await sql`INSERT INTO roundtable_feedback (user_id, name, email, message)
+        VALUES (${user.id}, ${name}, ${email}, ${message})`;
       return json({ ok: true });
     }
     if (path === "/rooms" && request.method === "GET") {
       const rows = await sql`SELECT id, name, type, description, created_at AS "createdAt", participant_count AS "participantCount", status
-        FROM roundtable_rooms ORDER BY created_at DESC`;
+        FROM roundtable_rooms WHERE user_id = ${user.id} ORDER BY created_at DESC`;
       const participantRows = await sql`SELECT room_id AS "roomId", name, initials, color, role, status
-        FROM roundtable_room_participants ORDER BY name`;
+        FROM roundtable_room_participants WHERE room_id IN (SELECT id FROM roundtable_rooms WHERE user_id = ${user.id}) ORDER BY name`;
       const transcriptRows = await sql`SELECT room_id AS "roomId", time, name, initials, color, text, confidence, current_entry AS "current"
-        FROM roundtable_transcript_entries ORDER BY room_id, entry_order`;
+        FROM roundtable_transcript_entries WHERE room_id IN (SELECT id FROM roundtable_rooms WHERE user_id = ${user.id}) ORDER BY room_id, entry_order`;
       return json(rows.map(room => ({ ...room, createdAt: new Date(room.createdAt).toLocaleDateString(), participants: participantRows.filter(participant => participant.roomId === room.id), transcript: transcriptRows.filter(entry => entry.roomId === room.id) })));
     }
     if (path === "/rooms" && request.method === "POST") {
       const room = await request.json() as { id?: string; name?: string; type?: string; description?: string };
       if (!room.id?.trim() || !room.name?.trim() || !room.type?.trim()) return json({ error: "Room name and type are required." }, 400);
-      const rows = await sql`INSERT INTO roundtable_rooms (id, name, type, description)
-        VALUES (${room.id.trim()}, ${room.name.trim()}, ${room.type.trim()}, ${room.description?.trim() || ""})
+      const rows = await sql`INSERT INTO roundtable_rooms (id, user_id, name, type, description)
+        VALUES (${room.id.trim()}, ${user.id}, ${room.name.trim()}, ${room.type.trim()}, ${room.description?.trim() || ""})
         RETURNING id, name, type, description, created_at AS "createdAt", participant_count AS "participantCount", status`;
       return json({ ...rows[0], createdAt: "Just now", participants: [], transcript: [] });
     }
     if (path === "/rooms/status" && request.method === "POST") {
       const { roomId, status } = await request.json() as { roomId?: string; status?: string };
       if (!roomId || !["waiting", "active", "ended"].includes(status || "")) return json({ error: "Room ID and valid status are required." }, 400);
-      await sql`UPDATE roundtable_rooms SET status = ${status} WHERE id = ${roomId}`;
+      const updated = await sql`UPDATE roundtable_rooms SET status = ${status} WHERE id = ${roomId} AND user_id = ${user.id} RETURNING id`;
+      if (!updated.length) return json({ error: "Room not found." }, 404);
       return json({ ok: true });
     }
     if (path === "/rooms/participants" && request.method === "POST") {
       const participant = await request.json() as { roomId?: string; name?: string; initials?: string; color?: string };
       if (!participant.roomId?.trim() || !participant.name?.trim()) return json({ error: "Room and participant are required." }, 400);
+      if (!(await userOwnsRoom(participant.roomId.trim(), user.id))) return json({ error: "Room not found." }, 404);
       await sql`INSERT INTO roundtable_room_participants (room_id, name, initials, color)
         VALUES (${participant.roomId.trim()}, ${participant.name.trim()}, ${participant.initials?.trim() || participant.name.trim().split(/\s+/).map(part => part[0]).join("").slice(0, 2).toUpperCase()}, ${participant.color || "purple"})
         ON CONFLICT (room_id, name) DO NOTHING`;
@@ -193,6 +207,7 @@ export default async function hello(request: Request): Promise<Response> {
     if (path === "/rooms/transcript" && request.method === "POST") {
       const entry = await request.json() as { roomId?: string; time?: string; name?: string; initials?: string; color?: string; text?: string; confidence?: string; current?: boolean };
       if (!entry.roomId?.trim() || !entry.time?.trim() || !entry.name?.trim() || !entry.text?.trim()) return json({ error: "Room, speaker, time, and transcript text are required." }, 400);
+      if (!(await userOwnsRoom(entry.roomId.trim(), user.id))) return json({ error: "Room not found." }, 404);
       const nextOrder = await sql`SELECT COALESCE(MAX(entry_order), 0) + 1 AS "entryOrder" FROM roundtable_transcript_entries WHERE room_id = ${entry.roomId.trim()}`;
       await sql`INSERT INTO roundtable_transcript_entries (room_id, entry_order, time, name, initials, color, text, confidence, current_entry)
         VALUES (${entry.roomId.trim()}, ${nextOrder[0].entryOrder}, ${entry.time.trim()}, ${entry.name.trim()}, ${entry.initials?.trim() || entry.name.trim().split(/\s+/).map(part => part[0]).join("").slice(0, 2).toUpperCase()}, ${entry.color || "purple"}, ${entry.text.trim()}, ${entry.confidence?.trim() || ""}, ${entry.current === true})`;
@@ -202,6 +217,7 @@ export default async function hello(request: Request): Promise<Response> {
       const { question, roomId, roomName, roomType, participantCount } = await request.json() as { question?: string; roomId?: string; roomName?: string; roomType?: string; participantCount?: number };
       if (!question?.trim()) return json({ error: "Question is required." }, 400);
       if (!roomId?.trim()) return json({ error: "Meeting context is required." }, 400);
+      if (!(await userOwnsRoom(roomId.trim(), user.id))) return json({ error: "Room not found." }, 404);
       return json({ answer: `I’m answering in the context of “${roomName || roomId}” (${roomType || "meeting"}, ${participantCount ?? 0} participants). Once the transcript service is connected, I’ll use this meeting’s transcript and decisions to answer: “${question.trim()}”` });
     }
     return json({ error: "Not found." }, 404);

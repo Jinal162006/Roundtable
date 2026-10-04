@@ -7,8 +7,13 @@ if (!AUTH_URL) throw new Error('Neon Auth URL is not configured.')
 const neonAuth = createInternalNeonAuth(AUTH_URL)
 const auth = neonAuth.adapter
 
-function unwrap<T extends { data?: unknown; error?: { message?: string } | null }>(result: T): NonNullable<T['data']> {
-  if (result.error) throw new Error(result.error.message || 'Authentication request failed.')
+function unwrap<T extends { data?: unknown; error?: { message?: string; code?: string } | null }>(result: T): NonNullable<T['data']> {
+  if (result.error) {
+    if (result.error.code === 'INVALID_EMAIL_OR_PASSWORD') {
+      throw new Error('Invalid email or password. If you created this account with Google, use Continue with Google instead.')
+    }
+    throw new Error(result.error.message || 'Authentication request failed.')
+  }
   if (!result.data) throw new Error('Authentication request returned no session.')
   return result.data as NonNullable<T['data']>
 }
@@ -16,7 +21,10 @@ function unwrap<T extends { data?: unknown; error?: { message?: string } | null 
 export const authApi = {
   signUp: async (name: string, email: string, password: string) => unwrap(await auth.signUp.email({ name, email, password })),
   signIn: async (email: string, password: string) => unwrap(await auth.signIn.email({ email, password })),
-  signOut: () => auth.signOut(),
+  signOut: async () => {
+    const result = await auth.signOut()
+    if (result.error) throw new Error(result.error.message || 'Could not sign out.')
+  },
   getSession: async () => {
     const result = await auth.getSession()
     if (result.error) throw new Error(result.error.message || 'Could not load the authentication session.')

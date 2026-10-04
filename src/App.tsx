@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { demoVoiceRecognitionService } from './services/voiceRecognitionService'
-import { roundtableApi, type Feedback, type Profile, type Room, type TranscriptEntry } from './services/roundtableApi'
+import { roundtableApi, type Feedback, type Profile, type Room } from './services/roundtableApi'
 import { authApi } from './services/authApi'
 
 type IconName = 'grid' | 'users' | 'clock' | 'settings' | 'search' | 'more' | 'mic' | 'wave' | 'message' | 'chevron'
@@ -22,20 +22,6 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
 }
 
-const defaultParticipants = [
-  { name: 'Maya Chen', initials: 'MC', color: 'purple', role: 'Host', status: 'Speaking' },
-  { name: 'Jordan Lee', initials: 'JL', color: 'blue', role: 'Participant', status: 'Listening' },
-  { name: 'Ravi Patel', initials: 'RP', color: 'orange', role: 'Participant', status: 'Listening' },
-  { name: 'Sofia Kim', initials: 'SK', color: 'green', role: 'Participant', status: 'Listening' },
-]
-
-const productTranscript: TranscriptEntry[] = [
-  { time: '10:31:04', name: 'Maya Chen', initials: 'MC', color: 'purple', text: 'I think we have a clear opportunity to simplify the onboarding flow.', confidence: '98%', current: true },
-  { time: '10:31:18', name: 'Jordan Lee', initials: 'JL', color: 'blue', text: 'Agreed. The first experience should make the value obvious within a few seconds.', confidence: '96%' },
-  { time: '10:31:32', name: 'Ravi Patel', initials: 'RP', color: 'orange', text: 'What if we bring the live room preview into that first step?', confidence: '93%' },
-  { time: '10:31:49', name: 'Sofia Kim', initials: 'SK', color: 'green', text: 'That could work well, especially for teams joining from multiple devices.', confidence: '97%' },
-]
-
 type SetupStep = 'create' | 'room' | 'identity' | 'voice' | 'waiting'
 type VoiceState = 'idle' | 'requesting-microphone' | 'recording' | 'processing' | 'success' | 'error' | 'permission-denied'
 type WorkspaceTab = 'Overview' | 'People' | 'Meeting history' | 'Meeting assistant' | 'Live room'
@@ -49,6 +35,7 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
   const [loading, setLoading] = useState(false)
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
+    if (loading) return
     setError('')
     setLoading(true)
     try {
@@ -74,11 +61,6 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
   }
   return <main className="auth-shell"><section className="auth-card"><div className="brand auth-brand"><span className="brand-mark"><span /></span><span>roundtable</span></div><div className="flow-kicker">{mode === 'signup' ? 'GET STARTED' : 'WELCOME BACK'}</div><h1>{mode === 'signup' ? 'Create your account' : 'Sign in to Roundtable'}</h1><p>{mode === 'signup' ? 'Bring your conversations together in one place.' : 'Continue to your conversations and rooms.'}</p><form className="auth-form" onSubmit={submit}>{mode === 'signup' && <label>Username<input autoComplete="name" value={name} onChange={event => setName(event.target.value)} placeholder="Your name" required /></label>}<label>Gmail or email<input type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="you@gmail.com" required /></label><label>Password<input type="password" autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} value={password} onChange={event => setPassword(event.target.value)} placeholder="Enter your password" minLength={8} required /></label>{error && <p className="error-text auth-error">{error}</p>}<button className="primary-button auth-submit" disabled={loading}>{loading ? 'Please wait…' : mode === 'signup' ? 'Create account' : 'Sign in'}</button></form><div className="auth-divider"><span>or</span></div><button className="google-button" onClick={() => void googleSignIn()} disabled={loading}><span>G</span> Continue with Google (choose account)</button><p className="auth-switch">{mode === 'signup' ? 'Already have an account?' : 'New to Roundtable?'} <button onClick={() => { setMode(mode === 'signup' ? 'signin' : 'signup'); setError('') }}>{mode === 'signup' ? 'Sign in' : 'Create an account'}</button></p></section></main>
 }
-
-const initialRooms: Room[] = [
-  { id: 'room-product-sync', name: 'Product sync · Q3', type: 'Meeting', description: 'A focused conversation about the next quarter.', createdAt: 'Today', participantCount: 4, status: 'active', participants: defaultParticipants, transcript: productTranscript },
-  { id: 'room-classroom-demo', name: 'Classroom demo', type: 'Classroom', description: '', createdAt: 'Yesterday', participantCount: 0, status: 'waiting', participants: [], transcript: [] },
-]
 
 function SetupProgress({ step }: { step: SetupStep }) {
   const current = step === 'create' ? 1 : step === 'room' || step === 'identity' ? 2 : step === 'voice' ? 3 : 4
@@ -148,9 +130,10 @@ function InvitePanel({ rooms, initialRoom, onClose }: { rooms: Room[]; initialRo
   return <div className="modal-backdrop" onClick={onClose}><div className="modal invite-modal" onClick={event => event.stopPropagation()}><div className="flow-kicker">INVITE PEOPLE</div><h2>Choose a room to invite people to</h2><p>Each invitation is tied to one room, so participants only join the conversation you select.</p><label>Existing room<select value={roomId} onChange={event => setRoomId(event.target.value)}>{rooms.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>{room && <div className="invite-link"><strong>{room.name}</strong><span>{link}</span><button className="secondary-button" onClick={() => void navigator.clipboard?.writeText(link)}>Copy link</button></div>}<div className="modal-actions"><button className="secondary-button" onClick={onClose}>Done</button></div></div></div>
 }
 
-function WorkspacePanel({ tab, rooms, activeRoom, onInvite, onViewLiveRoom }: { tab: Exclude<WorkspaceTab, 'Live room'>; rooms: Room[]; activeRoom: Room; onInvite: () => void; onViewLiveRoom: () => void }) {
-  if (tab === 'Meeting assistant') return <ChatPanel room={activeRoom} />
+function WorkspacePanel({ tab, rooms, activeRoom, onInvite, onViewLiveRoom }: { tab: Exclude<WorkspaceTab, 'Live room'>; rooms: Room[]; activeRoom: Room | null; onInvite: () => void; onViewLiveRoom: () => void }) {
+  if (tab === 'Meeting assistant') return activeRoom ? <ChatPanel room={activeRoom} /> : <section className="workspace-panel"><div className="empty-state">Create or select a room to use the meeting assistant.</div></section>
   if (tab === 'People') {
+    if (!activeRoom) return <section className="workspace-panel"><div className="empty-state">Create or select a room to manage participants.</div></section>
     const people = activeRoom.participants
     return <section className="workspace-panel"><div className="workspace-panel-heading"><div><div className="flow-kicker">WORKSPACE</div><h1>People</h1><p>People in the selected room. Choose an existing room before inviting anyone.</p></div><button className="primary-button" onClick={onInvite}>Invite people</button></div><div className="people-room-picker"><label>Room<select value={activeRoom.id} onChange={() => undefined} aria-label="Selected room"><option>{activeRoom.name}</option></select></label><span>{people.length} participant{people.length === 1 ? '' : 's'} in this room</span></div><div className="people-grid">{people.map(person => <div className="person-card" key={person.name}><div className={`speaker-avatar ${person.color}`}>{person.initials}</div><strong>{person.name}</strong><span>{person.role}</span><small>{person.status}</small></div>)}{people.length === 0 && <div className="empty-state">No participants have joined this room yet.</div>}</div></section>
   }
@@ -226,7 +209,7 @@ function App() {
   const [activeNav, setActiveNav] = useState<WorkspaceTab>('Live room')
   const [isPaused, setIsPaused] = useState(false)
   const [showEndModal, setShowEndModal] = useState(false)
-  const [rooms, setRooms] = useState<Room[]>(initialRooms)
+  const [rooms, setRooms] = useState<Room[]>([])
   const [flowStep, setFlowStep] = useState<SetupStep | null>(null)
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null)
   const [username, setUsername] = useState('')
@@ -239,19 +222,25 @@ function App() {
   const [showSearch, setShowSearch] = useState(false)
   const [showSupport, setShowSupport] = useState(false)
   const [dataError, setDataError] = useState('')
+  const signingOutRef = useRef(false)
   useEffect(() => {
+    if (signingOutRef.current) return
     void authApi.getSession().then(session => {
+      if (signingOutRef.current) return
       if (session?.user && session.user.emailVerified !== false) {
         localStorage.setItem('roundtable-authenticated', 'true')
         setAuthenticated(true)
       } else { localStorage.removeItem('roundtable-authenticated'); setAuthenticated(false) }
-    }).catch(() => undefined).finally(() => {
+    }).catch(() => {
+      localStorage.removeItem('roundtable-authenticated')
+      setAuthenticated(false)
+    }).finally(() => {
       if (new URLSearchParams(window.location.search).has('neon_auth_session_verifier')) {
         window.history.replaceState({}, document.title, window.location.pathname)
       }
       setAuthChecking(false)
     })
-  }, [authenticated])
+  }, [])
   useEffect(() => {
     if (!authenticated) return
     void Promise.all([roundtableApi.getProfile(), roundtableApi.getRooms()])
@@ -302,9 +291,22 @@ function App() {
     }
   }
   const signOut = async () => {
-    try { await authApi.signOut() } catch { /* The local session still needs to be cleared if the network is unavailable. */ }
-    localStorage.removeItem('roundtable-authenticated')
-    setAuthenticated(false)
+    signingOutRef.current = true
+    setAuthChecking(true)
+    try {
+      await authApi.signOut()
+      localStorage.removeItem('roundtable-authenticated')
+      setAuthenticated(false)
+      setRooms([])
+      setSelectedRoom(null)
+      setAssistantRoom(null)
+      setShowProfile(false)
+      setAuthChecking(false)
+    } catch (error) {
+      signingOutRef.current = false
+      setAuthChecking(false)
+      setDataError(error instanceof Error ? error.message : 'Could not sign out. Please try again.')
+    }
   }
   const endMeeting = async () => {
     if (!currentRoom) return
@@ -361,7 +363,7 @@ function App() {
         </header>
         <div className="content">
           {dataError && <p className="error-text data-error">{dataError}</p>}
-          {showProfile ? <ProfilePanel profile={profile} onSave={saveProfile} onSignOut={() => void signOut()} /> : activeNav !== 'Live room' ? <WorkspacePanel tab={activeNav} rooms={rooms} activeRoom={assistantRoom || currentRoom || initialRooms[0]} onInvite={() => setShowInvite(true)} onViewLiveRoom={() => { setActiveNav('Live room'); setSelectedRoom(currentRoom) }} /> : <>
+          {showProfile ? <ProfilePanel profile={profile} onSave={saveProfile} onSignOut={() => void signOut()} /> : activeNav !== 'Live room' ? <WorkspacePanel tab={activeNav} rooms={rooms} activeRoom={assistantRoom || currentRoom} onInvite={() => setShowInvite(true)} onViewLiveRoom={() => { setActiveNav('Live room'); setSelectedRoom(currentRoom) }} /> : <>
           <div className="room-heading">
             <div><div className="eyebrow">{currentRoom?.status === 'active' ? <><span className="live-pulse" /> LIVE NOW <span className="heading-time">Started 10:28 AM · 24 min</span></> : currentRoom?.status === 'ended' ? 'MEETING ENDED' : 'WAITING ROOM'}</div><h1>{currentRoom?.name || 'Live room'}</h1><p className="subheading">{currentRoom?.description || (currentRoom?.status === 'waiting' ? 'No live conversation has started in this room.' : 'This meeting has ended.')}</p></div>
             <div className="heading-actions"><button className="secondary-button"><Icon name="users" size={16} /> Invite</button><button className="secondary-button"><Icon name="more" size={16} /></button>{currentRoom?.status === 'active' && <button className="end-button" onClick={() => setShowEndModal(true)}>End meeting</button>}</div>

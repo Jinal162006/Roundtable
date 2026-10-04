@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { demoVoiceRecognitionService } from './services/voiceRecognitionService'
 import { roundtableApi, type Feedback, type Profile, type Room, type TranscriptEntry } from './services/roundtableApi'
+import { authApi } from './services/authApi'
 
 type IconName = 'grid' | 'users' | 'clock' | 'settings' | 'search' | 'more' | 'mic' | 'wave' | 'message' | 'chevron'
 
@@ -39,6 +40,41 @@ type SetupStep = 'create' | 'room' | 'identity' | 'voice' | 'waiting'
 type VoiceState = 'idle' | 'requesting-microphone' | 'recording' | 'processing' | 'success' | 'error' | 'permission-denied'
 type WorkspaceTab = 'Overview' | 'People' | 'Meeting history' | 'Meeting assistant' | 'Live room'
 
+function AuthScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin')
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setError('')
+    setLoading(true)
+    try {
+      if (mode === 'signup') await authApi.signUp(name.trim(), email.trim(), password)
+      else await authApi.signIn(email.trim(), password)
+      localStorage.setItem('roundtable-authenticated', 'true')
+      onAuthenticated()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not authenticate. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+  const googleSignIn = async () => {
+    setError('')
+    setLoading(true)
+    try {
+      await authApi.signInWithGoogle()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Google sign-in is unavailable right now.')
+      setLoading(false)
+    }
+  }
+  return <main className="auth-shell"><section className="auth-card"><div className="brand auth-brand"><span className="brand-mark"><span /></span><span>roundtable</span></div><div className="flow-kicker">{mode === 'signup' ? 'GET STARTED' : 'WELCOME BACK'}</div><h1>{mode === 'signup' ? 'Create your account' : 'Sign in to Roundtable'}</h1><p>{mode === 'signup' ? 'Bring your conversations together in one place.' : 'Continue to your conversations and rooms.'}</p><form className="auth-form" onSubmit={submit}>{mode === 'signup' && <label>Username<input autoComplete="name" value={name} onChange={event => setName(event.target.value)} placeholder="Your name" required /></label>}<label>Gmail or email<input type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="you@gmail.com" required /></label><label>Password<input type="password" autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} value={password} onChange={event => setPassword(event.target.value)} placeholder="Enter your password" minLength={8} required /></label>{error && <p className="error-text auth-error">{error}</p>}<button className="primary-button auth-submit" disabled={loading}>{loading ? 'Please wait…' : mode === 'signup' ? 'Create account' : 'Sign in'}</button></form><div className="auth-divider"><span>or</span></div><button className="google-button" onClick={() => void googleSignIn()} disabled={loading}><span>G</span> Continue with Google (choose account)</button><p className="auth-switch">{mode === 'signup' ? 'Already have an account?' : 'New to Roundtable?'} <button onClick={() => { setMode(mode === 'signup' ? 'signin' : 'signup'); setError('') }}>{mode === 'signup' ? 'Sign in' : 'Create an account'}</button></p></section></main>
+}
+
 const initialRooms: Room[] = [
   { id: 'room-product-sync', name: 'Product sync · Q3', type: 'Meeting', description: 'A focused conversation about the next quarter.', createdAt: 'Today', participantCount: 4, status: 'active', participants: defaultParticipants, transcript: productTranscript },
   { id: 'room-classroom-demo', name: 'Classroom demo', type: 'Classroom', description: '', createdAt: 'Yesterday', participantCount: 0, status: 'waiting', participants: [], transcript: [] },
@@ -49,7 +85,7 @@ function SetupProgress({ step }: { step: SetupStep }) {
   return <div className="setup-progress">{['Room', 'Identity', 'Voice profile', 'Join conversation'].map((label, index) => <div className={`setup-progress-step ${index + 1 < current ? 'complete' : ''} ${index + 1 === current ? 'current' : ''}`} key={label}><span>{index + 1 < current ? '✓' : index + 1}</span>{label}</div>)}</div>
 }
 
-function ProfilePanel({ profile, onSave }: { profile: Profile; onSave: (profile: Profile) => Promise<void> }) {
+function ProfilePanel({ profile, onSave, onSignOut }: { profile: Profile; onSave: (profile: Profile) => Promise<void>; onSignOut: () => void }) {
   const [draft, setDraft] = useState(profile)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
@@ -62,7 +98,7 @@ function ProfilePanel({ profile, onSave }: { profile: Profile; onSave: (profile:
     reader.readAsDataURL(file)
   }
 
-  return <section className="workspace-panel"><div className="workspace-panel-heading"><div><div className="flow-kicker">ACCOUNT</div><h1>Your profile</h1><p>Update the details people see when you join a Roundtable.</p></div></div><form className="profile-form" onSubmit={save}><div className="profile-photo-row"><div className="profile-photo">{draft.imageUrl ? <img src={draft.imageUrl} alt="Profile" /> : draft.name.split(' ').map(part => part[0]).join('').slice(0, 2)}</div><label className="upload-button">Change photo<input type="file" accept="image/*" onChange={selectPhoto} /></label><span>JPG or PNG, up to 5 MB</span></div><div className="profile-fields"><label>Full name<input value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} required /></label><label>Birthdate<input type="date" value={draft.birthdate} onChange={event => setDraft({ ...draft, birthdate: event.target.value })} /></label><label>Email address<input type="email" value={draft.email} onChange={event => setDraft({ ...draft, email: event.target.value })} /></label><label>Phone number<input type="tel" value={draft.phone} onChange={event => setDraft({ ...draft, phone: event.target.value })} /></label></div><div className="profile-save-row"><span className={message.includes('Could') ? 'error-text' : 'success-text'}>{message}</span><button className="primary-button" disabled={saving}>{saving ? 'Saving…' : 'Save changes'}</button></div></form></section>
+  return <section className="workspace-panel"><div className="workspace-panel-heading"><div><div className="flow-kicker">ACCOUNT</div><h1>Your profile</h1><p>Update the details people see when you join a Roundtable.</p></div></div><form className="profile-form" onSubmit={save}><div className="profile-photo-row"><div className="profile-photo">{draft.imageUrl ? <img src={draft.imageUrl} alt="Profile" /> : draft.name.split(' ').map(part => part[0]).join('').slice(0, 2)}</div><label className="upload-button">Change photo<input type="file" accept="image/*" onChange={selectPhoto} /></label><span>JPG or PNG, up to 5 MB</span></div><div className="profile-fields"><label>Full name<input value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} required /></label><label>Birthdate<input type="date" value={draft.birthdate} onChange={event => setDraft({ ...draft, birthdate: event.target.value })} /></label><label>Email address<input type="email" value={draft.email} onChange={event => setDraft({ ...draft, email: event.target.value })} /></label><label>Phone number<input type="tel" value={draft.phone} onChange={event => setDraft({ ...draft, phone: event.target.value })} /></label></div><div className="profile-save-row"><span className={message.includes('Could') ? 'error-text' : 'success-text'}>{message}</span><button className="primary-button" disabled={saving}>{saving ? 'Saving…' : 'Save changes'}</button></div></form><button className="sign-out-button" onClick={onSignOut}>Sign out</button></section>
 }
 
 function SupportPanel({ profile, onClose }: { profile: Profile; onClose: () => void }) {
@@ -185,6 +221,8 @@ function RoomFlow({ step, room, onStep, onCreate, onClose, onEnterRoom, username
 }
 
 function App() {
+  const [authenticated, setAuthenticated] = useState(() => localStorage.getItem('roundtable-authenticated') === 'true')
+  const [authChecking, setAuthChecking] = useState(true)
   const [activeNav, setActiveNav] = useState<WorkspaceTab>('Live room')
   const [isPaused, setIsPaused] = useState(false)
   const [showEndModal, setShowEndModal] = useState(false)
@@ -193,37 +231,59 @@ function App() {
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null)
   const [username, setUsername] = useState('')
   const [voiceProfileId, setVoiceProfileId] = useState<string | null>(null)
-  const [profile, setProfile] = useState<Profile>({ name: 'Maya Chen', birthdate: '', email: '', phone: '', imageUrl: '' })
+  const [profile, setProfile] = useState<Profile>({ name: '', birthdate: '', email: '', phone: '', imageUrl: '' })
   const [showProfile, setShowProfile] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Room | null>(null)
   const [assistantRoom, setAssistantRoom] = useState<Room | null>(null)
   const [showInvite, setShowInvite] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
   const [showSupport, setShowSupport] = useState(false)
+  const [dataError, setDataError] = useState('')
   useEffect(() => {
-    void roundtableApi.getProfile().then(setProfile).catch(() => undefined)
-    void roundtableApi.getRooms().then(setRooms).catch(() => undefined)
-  }, [])
+    void authApi.getSession().then(session => {
+      if (session?.user && session.user.emailVerified !== false) {
+        localStorage.setItem('roundtable-authenticated', 'true')
+        setAuthenticated(true)
+      } else { localStorage.removeItem('roundtable-authenticated'); setAuthenticated(false) }
+    }).catch(() => undefined).finally(() => {
+      if (new URLSearchParams(window.location.search).has('neon_auth_session_verifier')) {
+        window.history.replaceState({}, document.title, window.location.pathname)
+      }
+      setAuthChecking(false)
+    })
+  }, [authenticated])
+  useEffect(() => {
+    if (!authenticated) return
+    void Promise.all([roundtableApi.getProfile(), roundtableApi.getRooms()])
+      .then(([loadedProfile, loadedRooms]) => {
+        setProfile(loadedProfile)
+        setRooms(loadedRooms)
+      })
+      .catch(error => setDataError(error instanceof Error ? error.message : 'Unable to load Roundtable data. Please try again.'))
+  }, [authenticated])
 
   const openRoom = (room: Room) => { setSelectedRoom(room); setFlowStep('room') }
   const createRoom = (room: Room) => {
+    setDataError('')
     void roundtableApi.createRoom(room).then(savedRoom => {
       setRooms(current => [savedRoom, ...current.filter(existing => existing.id !== savedRoom.id)])
       setSelectedRoom(savedRoom)
       setFlowStep('room')
-    }).catch(() => {
-      setRooms(current => [room, ...current.filter(existing => existing.id !== room.id)])
-      setSelectedRoom(room)
-      setFlowStep('room')
-    })
+    }).catch(error => setDataError(error instanceof Error ? error.message : 'Unable to save the room. Please try again.'))
   }
   const currentRoom = selectedRoom || rooms.find(room => room.status === 'active') || rooms[0] || null
-  const enterMeetingRoom = () => {
+  const enterMeetingRoom = async () => {
     if (!selectedRoom) return
     const newParticipant = { name: username.trim() || profile.name, initials: (username.trim() || profile.name).split(/\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase(), color: 'purple', role: 'Host', status: 'Speaking' }
     const participantsForRoom = selectedRoom.participants.some(participant => participant.name === newParticipant.name) ? selectedRoom.participants : [...selectedRoom.participants, newParticipant]
     const liveRoom = { ...selectedRoom, participants: participantsForRoom, status: 'active' as const, participantCount: participantsForRoom.length }
-    void roundtableApi.addParticipant(selectedRoom.id, newParticipant).catch(() => undefined)
+    setDataError('')
+    try {
+      await roundtableApi.addParticipant(selectedRoom.id, newParticipant)
+    } catch (error) {
+      setDataError(error instanceof Error ? error.message : 'Unable to save the participant. Please try again.')
+      return
+    }
     setRooms(current => current.map(room => room.id === liveRoom.id ? liveRoom : room))
     setSelectedRoom(liveRoom)
     setAssistantRoom(liveRoom)
@@ -231,20 +291,48 @@ function App() {
     setFlowStep(null)
     setVoiceProfileId(null)
   }
-  const saveProfile = async (nextProfile: Profile) => { try { const saved = await roundtableApi.updateProfile(nextProfile); setProfile(saved) } catch { setProfile(nextProfile) } }
+  const saveProfile = async (nextProfile: Profile) => {
+    setDataError('')
+    try {
+      const saved = await roundtableApi.updateProfile(nextProfile)
+      setProfile(saved)
+    } catch (error) {
+      setDataError(error instanceof Error ? error.message : 'Unable to save your profile. Please try again.')
+      throw error
+    }
+  }
+  const signOut = async () => {
+    try { await authApi.signOut() } catch { /* The local session still needs to be cleared if the network is unavailable. */ }
+    localStorage.removeItem('roundtable-authenticated')
+    setAuthenticated(false)
+  }
   const endMeeting = async () => {
     if (!currentRoom) return
     const endedRoom = { ...currentRoom, status: 'ended' as const }
     try {
       await roundtableApi.updateRoomStatus(currentRoom.id, 'ended')
-    } catch {
-      // Keep the room lifecycle correct in the UI if the API deployment is unavailable.
+    } catch (error) {
+      setDataError(error instanceof Error ? error.message : 'Unable to update the meeting. Please try again.')
+      return
     }
     setRooms(current => current.map(room => room.id === endedRoom.id ? endedRoom : room))
     setSelectedRoom(endedRoom)
     setShowEndModal(false)
   }
-  const deleteRoom = async (room: Room) => { try { await roundtableApi.deleteRoom(room.id) } catch { /* Demo fallback keeps the UI usable when the API is unavailable. */ } setRooms(current => current.filter(item => item.id !== room.id)); if (selectedRoom?.id === room.id) setSelectedRoom(null); setDeleteTarget(null) }
+  const deleteRoom = async (room: Room) => {
+    setDataError('')
+    try {
+      await roundtableApi.deleteRoom(room.id)
+      setRooms(current => current.filter(item => item.id !== room.id))
+      if (selectedRoom?.id === room.id) setSelectedRoom(null)
+      setDeleteTarget(null)
+    } catch (error) {
+      setDataError(error instanceof Error ? error.message : 'Unable to delete the room. Please try again.')
+    }
+  }
+
+  if (authChecking) return <main className="auth-shell"><section className="auth-card"><div className="brand auth-brand"><span className="brand-mark"><span /></span><span>roundtable</span></div><p>Loading your session…</p></section></main>
+  if (!authenticated) return <AuthScreen onAuthenticated={() => setAuthenticated(true)} />
 
   return (
     <div className="app-shell">
@@ -272,7 +360,8 @@ function App() {
           <div className="top-actions"><button className="icon-button" onClick={() => setShowSearch(true)} aria-label="Search people or rooms"><Icon name="search" /></button><button className="help-button" onClick={() => setShowSupport(true)} aria-label="Support and feedback">?</button><button className="avatar-small" onClick={() => setShowProfile(true)} aria-label="Open profile and settings">{profile.imageUrl ? <img src={profile.imageUrl} alt="" /> : profile.name.split(' ').map(part => part[0]).join('').slice(0, 2)}</button></div>
         </header>
         <div className="content">
-          {showProfile ? <ProfilePanel profile={profile} onSave={saveProfile} /> : activeNav !== 'Live room' ? <WorkspacePanel tab={activeNav} rooms={rooms} activeRoom={assistantRoom || currentRoom || initialRooms[0]} onInvite={() => setShowInvite(true)} onViewLiveRoom={() => { setActiveNav('Live room'); setSelectedRoom(currentRoom) }} /> : <>
+          {dataError && <p className="error-text data-error">{dataError}</p>}
+          {showProfile ? <ProfilePanel profile={profile} onSave={saveProfile} onSignOut={() => void signOut()} /> : activeNav !== 'Live room' ? <WorkspacePanel tab={activeNav} rooms={rooms} activeRoom={assistantRoom || currentRoom || initialRooms[0]} onInvite={() => setShowInvite(true)} onViewLiveRoom={() => { setActiveNav('Live room'); setSelectedRoom(currentRoom) }} /> : <>
           <div className="room-heading">
             <div><div className="eyebrow">{currentRoom?.status === 'active' ? <><span className="live-pulse" /> LIVE NOW <span className="heading-time">Started 10:28 AM · 24 min</span></> : currentRoom?.status === 'ended' ? 'MEETING ENDED' : 'WAITING ROOM'}</div><h1>{currentRoom?.name || 'Live room'}</h1><p className="subheading">{currentRoom?.description || (currentRoom?.status === 'waiting' ? 'No live conversation has started in this room.' : 'This meeting has ended.')}</p></div>
             <div className="heading-actions"><button className="secondary-button"><Icon name="users" size={16} /> Invite</button><button className="secondary-button"><Icon name="more" size={16} /></button>{currentRoom?.status === 'active' && <button className="end-button" onClick={() => setShowEndModal(true)}>End meeting</button>}</div>

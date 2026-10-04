@@ -1,4 +1,5 @@
 const API_URL = import.meta.env.VITE_NEON_FUNCTION_API_BASE_URL as string | undefined
+import { authApi } from './authApi'
 
 export type Profile = { name: string; birthdate: string; email: string; phone: string; imageUrl: string }
 export type RoomParticipant = { name: string; initials: string; color: string; role: string; status: string }
@@ -12,7 +13,9 @@ function normalizeProfile(profile: Profile): Profile {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!API_URL) throw new Error('Neon API URL is not configured.')
-  const response = await fetch(`${API_URL}${path}`, { ...init, headers: { 'Content-Type': 'text/plain', ...init?.headers } })
+  const token = await authApi.getAuthToken()
+  if (!token) throw new Error('Your authentication session has expired. Please sign in again.')
+  const response = await fetch(`${API_URL}${path}`, { ...init, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...init?.headers } })
   if (!response.ok) throw new Error(await response.text() || `Request failed with ${response.status}.`)
   return response.json() as Promise<T>
 }

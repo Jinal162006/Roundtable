@@ -1,6 +1,7 @@
 import { neon } from "@neondatabase/serverless";
 
 type Profile = { name: string; birthdate: string; email: string; phone: string; imageUrl: string };
+type AuthenticatedUser = { id: string; name: string; email: string };
 
 const sql = neon(process.env.DATABASE_URL!);
 let initialized = false;
@@ -9,7 +10,7 @@ async function ensureSchema() {
   if (initialized) return;
   await sql`CREATE TABLE IF NOT EXISTS roundtable_profiles (
     user_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL DEFAULT 'Maya Chen',
+    name TEXT NOT NULL DEFAULT '',
     birthdate DATE,
     email TEXT NOT NULL DEFAULT '',
     phone TEXT NOT NULL DEFAULT '',
@@ -81,25 +82,62 @@ async function ensureSchema() {
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type" },
+    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Authorization, Content-Type" },
   });
 }
 
+function decodeBase64Url(value: string): Uint8Array {
+  const binary = atob(value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "="));
+  return Uint8Array.from(binary, character => character.charCodeAt(0));
+}
+
+async function authenticate(request: Request): Promise<AuthenticatedUser | null> {
+  const authorization = request.headers.get("Authorization");
+  const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+  const jwksUrl = process.env.NEON_AUTH_JWKS_URL;
+  if (!token || !jwksUrl) return null;
+  try {
+    const [encodedHeader, encodedPayload, encodedSignature] = token.split(".");
+    if (!encodedHeader || !encodedPayload || !encodedSignature) return null;
+    const header = JSON.parse(new TextDecoder().decode(decodeBase64Url(encodedHeader))) as { alg?: string; kid?: string };
+    const payload = JSON.parse(new TextDecoder().decode(decodeBase64Url(encodedPayload))) as { sub?: string; exp?: number; name?: string; email?: string };
+    if (header.alg !== "RS256" || !header.kid || !payload.sub || !payload.exp || payload.exp <= Math.floor(Date.now() / 1000)) return null;
+    const jwksResponse = await fetch(jwksUrl);
+    if (!jwksResponse.ok) return null;
+    const jwks = await jwksResponse.json() as { keys?: JsonWebKey[] };
+    const key = jwks.keys?.find(candidate => (candidate as JsonWebKey & { kid?: string }).kid === header.kid);
+    if (!key) return null;
+    const cryptoKey = await crypto.subtle.importKey("jwk", key, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+    const valid = await crypto.subtle.verify({ name: "RSASSA-PKCS1-v1_5" }, cryptoKey, decodeBase64Url(encodedSignature), new TextEncoder().encode(`${encodedHeader}.${encodedPayload}`));
+    return valid ? { id: payload.sub, name: payload.name?.trim() || "", email: payload.email?.trim() || "" } : null;
+  } catch {
+    return null;
+  }
+}
+
 export default async function hello(request: Request): Promise<Response> {
-  if (request.method === "OPTIONS") return new Response(null, { headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type" } });
+  if (request.method === "OPTIONS") return new Response(null, { headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Authorization, Content-Type" } });
   try {
     await ensureSchema();
+    const user = await authenticate(request);
+    if (!user) return json({ error: "Authentication is required." }, 401);
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "");
     if (path === "/profile" && request.method === "GET") {
-      const rows = await sql`SELECT name, birthdate, email, phone, image_url AS "imageUrl" FROM roundtable_profiles WHERE user_id = 'demo-user'`;
-      return json(rows[0] ?? { name: "Maya Chen", birthdate: "", email: "", phone: "", imageUrl: "" });
+      const rows = await sql`INSERT INTO roundtable_profiles (user_id, name, email)
+        VALUES (${user.id}, ${user.name}, ${user.email})
+        ON CONFLICT (user_id) DO UPDATE SET
+          name = CASE WHEN roundtable_profiles.name = '' OR roundtable_profiles.name = 'Maya Chen' THEN EXCLUDED.name ELSE roundtable_profiles.name END,
+          email = CASE WHEN roundtable_profiles.email = '' THEN EXCLUDED.email ELSE roundtable_profiles.email END,
+          updated_at = NOW()
+        RETURNING name, birthdate, email, phone, image_url AS "imageUrl"`;
+      return json(rows[0]);
     }
     if (path === "/profile" && request.method === "POST") {
       const profile = await request.json() as Profile;
       const rows = await sql`INSERT INTO roundtable_profiles (user_id, name, birthdate, email, phone, image_url)
-        VALUES ('demo-user', ${profile.name.trim()}, ${profile.birthdate || null}, ${profile.email.trim()}, ${profile.phone.trim()}, ${profile.imageUrl || ""})
-        ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name, birthdate = EXCLUDED.birthdate, email = EXCLUDED.email, phone = EXCLUDED.phone, image_url = EXCLUDED.image_url, updated_at = NOW()
+        VALUES (${user.id}, ${profile.name.trim()}, ${profile.birthdate || null}, ${profile.email.trim()}, ${profile.phone.trim()}, ${profile.imageUrl || ""})
+        ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, phone = EXCLUDED.phone, birthdate = EXCLUDED.birthdate, image_url = EXCLUDED.image_url, updated_at = NOW()
         RETURNING name, birthdate, email, phone, image_url AS "imageUrl"`;
       return json(rows[0]);
     }
